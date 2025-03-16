@@ -1,0 +1,27 @@
+(0)Heller: FF3AC5
+(1)Dunkler: FFBA45
+(2)Skip: FF827D
+(3)On/Off: FF02FD
+(4)Rot: FFA25D
+(5)Blau: FF9A65
+(6)Grün: FF1AE5
+(7)Weiss: FF22DD
+(8)Pink: FF7887
+(9)Türkis: FF18E7
+(10)Quick: FFE817
+(11)Slow: FFC837
+(12)Fade 1: FF609F
+(13)Fade 2: FFE01F
+(14)DIY1: FF30CF
+(15)DIY2: FFB04F
+(16)DIY3: FF708F
+(17)DIY4: FF10EF
+(18)DIY5: FF906F
+(19)DIY6: FF50AF
+(20)RedUp: FF6897
+(21)RedDown: FF48B7
+(22)GreenUp: FFA857
+(23)GreenDown: FF8877
+(24)BlueUp: FF28D7
+(25)BlueDown: FF08F7
+(26)Dunkelgelb: FF7887
