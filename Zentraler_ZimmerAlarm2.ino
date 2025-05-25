@@ -140,6 +140,7 @@ void verbindungsAnimation(bool verbindung)
     IrSender.sendNEC(IRcodes[0], 32);
     delay(20);
   }
+  WDT.refresh();
   for(int i = 350; i>0; i-=35)
   {
     delay(i);
@@ -147,6 +148,7 @@ void verbindungsAnimation(bool verbindung)
     delay(i); 
     IrSender.sendNEC(IRcodes[3], 32);
   }
+  WDT.refresh();
   delay(20); 
   IrSender.sendNEC(IRcodes[3], 32);
   delay(20); 
@@ -159,6 +161,7 @@ void verbindungsAnimation(bool verbindung)
   {
     IrSender.sendNEC(IRcodes[1], 32);
     delay(i*50);
+    WDT.refresh();
   }
 
   IrSender.sendNEC(IRcodes[3], 32);
@@ -240,7 +243,7 @@ void UPDIncome()
     Serial.println(incomingPacket);
 
     // Optional: Auf einen bestimmten Trigger reagieren
-    if (strstr(incomingPacket, "trigger"))
+    if (strstr(incomingPacket, "trigger") && pC_StatusIOT) //Only give Alarm if PC is powered on
     {
       bool startState=true;
       if(analogRead(rgbPin)<500)
