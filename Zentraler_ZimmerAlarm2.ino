@@ -1,5 +1,5 @@
 #include "arduino_secrets.h"
-#include "WiFiS3.h"
+#include <WiFiS3.h>
 #include <WiFiUdp.h>
 #include <IRremote.h>
 #include <Time.h>
@@ -9,6 +9,7 @@
 #include <WDT.h>
 #include "FspTimer.h"
 #include <MqttClient.h>
+#include <NTPClient.h>
 
 #define DHTTYPE DHT22
 #define PIN_DHT22 7
@@ -69,10 +70,10 @@ const Button buttons[] = {
   {"On/Off",     0xFF02FD},
   {"Rot",        0xFFA25D},
   {"Blau",       0xFF9A65},
-  {"Grün",       0xFF1AE5},
+  {"Gruen",       0xFF1AE5},
   {"Weiss",      0xFF22DD},
   {"Pink",       0xFF7887},
-  {"Türkis",     0xFF18E7},
+  {"Tuerkis",     0xFF18E7},
   {"Quick",      0xFFE817},
   {"Slow",       0xFFC837},
   {"Fade 1",     0xFF609F},
@@ -94,7 +95,6 @@ const Button buttons[] = {
 
 const int buttonCount = sizeof(buttons) / sizeof(buttons[0]);
 
-WiFiUDP udp;
 const int udpPort = 43332;           // Port, auf dem empfangen wird
 char incomingPacket[255];
 
@@ -112,9 +112,11 @@ const char* NTP_SERVER = "pool.ntp.org";
 
 FspTimer led_blinker_timer;
 WiFiClient wifiClient;
+WiFiUDP udp;
 MqttClient mqttClient(wifiClient);
 DHT dht(PIN_DHT22, DHTTYPE);
-NTPClient timeClient(ntpUDP, NTP_SERVER, NTP_TIME_OFFSET, 60000);
+NTPClient timeClient(udp, NTP_SERVER, NTP_TIME_OFFSET, 60000);
+
 
 void LEDBlinken();
 void led_blinker_callback(timer_callback_args_t __attribute((unused)) *p_args);
@@ -124,7 +126,7 @@ void UPDIncome();
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("Programm Start");
+  Serial.println("\nProgramm Start");
 
   pinMode(alarmPin, OUTPUT);
   pinMode(irLedPin, OUTPUT);
@@ -141,6 +143,7 @@ void setup() {
   beginLEDTimer(20);
 
   dht.begin();
+  connectWifi();
   connectMqtt();
   // This delay gives the chance to wait for a Serial Monitor without blocking if none is found
   delay(3000);
@@ -191,8 +194,35 @@ void loop() {
 
 }
 
+void connectWifi() {
+  // *** NEU: DNS-Server manuell setzen zur Stabilisierung ***
+  IPAddress dns(8, 8, 8, 8); // Google's public DNS
+  WiFi.setDNS(dns);
+  Serial.println("DNS-Server manuell auf 8.8.8.8 gesetzt.");
+
+  Serial.print("Verbinde mit WLAN '");
+  Serial.print(WIFI_SSID);
+  Serial.print("'...");
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nVerbunden! IP-Adresse: " + WiFi.localIP().toString());
+}
+
 void connectMqtt() {
-  mqttClient.onMessage(onMqttMessage); // Setze die Callback-Funktion für eingehende Nachrichten
+  mqttClient.onMessage(onMqttMessage);
+  mqttClient.setUsernamePassword(mqtt_user, mqtt_pass);
+
+  // *** DIESE ZEILEN HINZUFÜGEN ***
+  String clientId = "arduino-uno-r4-" + String(random(0xffff), HEX);
+  mqttClient.setId(clientId);
+  Serial.println("Verwende zufällige Client-ID: " + clientId);
+  // ******************************
+
+  Serial.print("Verbinde mit MQTT Broker '");
 
   // Falls dein Broker eine Authentifizierung benötigt:
   // mqttClient.setUsernamePassword(mqtt_user, mqtt_pass);
@@ -203,7 +233,7 @@ void connectMqtt() {
   while (!mqttClient.connect(broker, port)) {
     Serial.print(".");
     // Warte 5 Sekunden vor dem nächsten Versuch
-    delay(5000);
+    delay(700);
   }
   Serial.println("\nMQTT connected!");
 
@@ -216,7 +246,7 @@ void connectMqtt() {
 void publishSensorData() {
 
   if (pc_status_mqtt != last_pc_status) {
-    last_pc_status = pc_status_mqtt
+    last_pc_status = pc_status_mqtt;
     mqttClient.beginMessage(TOPIC_PC_STATUS, true, 1); // topic, retained, qos
     mqttClient.print(pc_status_mqtt);
     mqttClient.endMessage();
@@ -230,7 +260,7 @@ void publishSensorData() {
   // Nur senden, wenn sich der Wert signifikant ändert
   if (abs(temp_mqtt - last_temp) > 0.1) {
     last_temp = temp_mqtt;
-    mqttClient.beginMessage(TOPIC_PC_TEMP, false, 0); // topic, retained, qos
+    mqttClient.beginMessage(TOPIC_TEMP, false, 0); // topic, retained, qos
     mqttClient.print(temp_mqtt);
     mqttClient.endMessage();
   }
@@ -278,9 +308,11 @@ void handlePcCommand(String command) {
   {
     Serial.println("Resetting PC relay...");
     digitalWrite(relayPin,HIGH);
+    WDT.refresh();
     delay(4000);
     WDT.refresh();
-    delay(4000)
+    delay(4000);
+    WDT.refresh();
     digitalWrite(relayPin,LOW);
   }
   else {
@@ -297,7 +329,7 @@ void handleRgbCommand(String command) {
   Serial.print("Handling RGB command: ");
   Serial.println(command);
 
-  code = getHexByName(command);
+  int code = getHexByName(command.c_str());
   if (code == 0)
   {
     Serial.print("Ungueltiger Code: ");
@@ -313,51 +345,51 @@ void verbindungsAnimation(bool verbindung)
   if(analogRead(rgbPin)<500)
   {
     startState=false;
-    IrSender.sendNEC(IRcodes[3], 32);
+    IrSender.sendNEC(getHexByIndex(3), 32);
     delay(10);
   }
-  IrSender.sendNEC(IRcodes[26], 32);
+  IrSender.sendNEC(getHexByIndex(26), 32);
   for(int i = 0; i < 7; i++)
   {
-    IrSender.sendNEC(IRcodes[0], 32);
+    IrSender.sendNEC(getHexByIndex(0), 32);
     delay(20);
   }
   WDT.refresh();
   for(int i = 350; i>0; i-=35)
   {
     delay(i);
-     IrSender.sendNEC(IRcodes[3], 32);
+     IrSender.sendNEC(getHexByIndex(3), 32);
     delay(i); 
-    IrSender.sendNEC(IRcodes[3], 32);
+    IrSender.sendNEC(getHexByIndex(3), 32);
   }
   WDT.refresh();
   delay(20); 
-  IrSender.sendNEC(IRcodes[3], 32);
+  IrSender.sendNEC(getHexByIndex(3), 32);
   delay(20); 
-  IrSender.sendNEC(IRcodes[3], 32);
+  IrSender.sendNEC(getHexByIndex(3), 32);
   
-  if(verbindung) IrSender.sendNEC(IRcodes[6], 32);
-  else IrSender.sendNEC(IRcodes[4], 32);
+  if(verbindung) IrSender.sendNEC(getHexByIndex(6), 32);
+  else IrSender.sendNEC(getHexByIndex(4), 32);
 
   for(int i = 8; i > 0; i--)
   {
-    IrSender.sendNEC(IRcodes[1], 32);
+    IrSender.sendNEC(getHexByIndex(1), 32);
     delay(i*50);
     WDT.refresh();
   }
 
-  IrSender.sendNEC(IRcodes[3], 32);
+  IrSender.sendNEC(getHexByIndex(3), 32);
   delay(1500);
   
   if(startState)
   {
-    IrSender.sendNEC(IRcodes[3], 32);
+    IrSender.sendNEC(getHexByIndex(3), 32);
     for(int i = 0; i < 7; i++)
     {
-      IrSender.sendNEC(IRcodes[0], 32);
+      IrSender.sendNEC(getHexByIndex(0), 32);
       delay(20);
     }
-    IrSender.sendNEC(IRcodes[12], 32);
+    IrSender.sendNEC(getHexByIndex(12), 32);
     
   }
 
@@ -396,7 +428,7 @@ void testeVerbindung() {
 
 bool istZeitZumTesten() {
   // Check 1: Ist das große Intervall (z.B. 12 Stunden) abgelaufen?
-  if (millis() - lastUdpTestTime >= UDP_TEST_INTERVAL) {
+  if (millis() - lastTestMillis >= testInterval) {
     return true;
   }
 
@@ -408,7 +440,7 @@ bool istZeitZumTesten() {
 
   // Wenn es die Trigger-Zeit ist UND der letzte Test länger als 65 Sekunden her ist
   // (um mehrfaches Auslösen in derselben Minute zu verhindern), dann ist es Zeit.
-  if (istTriggerZeit && (millis() - lastUdpTestTime > 65000)) {
+  if (istTriggerZeit && (millis() - lastTestMillis > 65000)) {
     return true;
   }
 
@@ -428,35 +460,35 @@ void UPDIncome()
     Serial.println(incomingPacket);
 
     // Optional: Auf einen bestimmten Trigger reagieren
-    if (strstr(incomingPacket, "trigger") && pC_StatusIOT) //Only give Alarm if PC is powered on
+    if (strstr(incomingPacket, "trigger") && pc_status_mqtt) //Only give Alarm if PC is powered on
     {
       bool startState=true;
       if(analogRead(rgbPin)<500)
       {
-        IrSender.sendNEC(IRcodes[3], 32);
+        IrSender.sendNEC(getHexByIndex(3), 32);
         //delay(10);
         startState=false;
       }
       
-      IrSender.sendNEC(IRcodes[5], 32);
+      IrSender.sendNEC(getHexByIndex(5), 32);
       delay(20);
-      IrSender.sendNEC(IRcodes[3], 32);
+      IrSender.sendNEC(getHexByIndex(3), 32);
       delay(50);
-      IrSender.sendNEC(IRcodes[3], 32);
+      IrSender.sendNEC(getHexByIndex(3), 32);
       delay(50);
-      IrSender.sendNEC(IRcodes[3], 32);
+      IrSender.sendNEC(getHexByIndex(3), 32);
       delay(50);
-      IrSender.sendNEC(IRcodes[3], 32);
+      IrSender.sendNEC(getHexByIndex(3), 32);
       
       if(!startState)
       {
         delay(50);
-        IrSender.sendNEC(IRcodes[3], 32);
+        IrSender.sendNEC(getHexByIndex(3), 32);
       }
       else
       {
         delay(20);
-        IrSender.sendNEC(IRcodes[12], 32);
+        IrSender.sendNEC(getHexByIndex(12), 32);
       }
     } 
   }
@@ -489,13 +521,13 @@ void buttonChange()
       {
         if(analogRead(rgbPin)<500)
         {
-          IrSender.sendNEC(IRcodes[3], 32);
+          IrSender.sendNEC(getHexByIndex(3), 32);
           delay(20);
-          IrSender.sendNEC(IRcodes[12], 32);
+          IrSender.sendNEC(getHexByIndex(12), 32);
         }
         else
         {
-          IrSender.sendNEC(IRcodes[3], 32);
+          IrSender.sendNEC(getHexByIndex(3), 32);
         }
 
         
@@ -513,12 +545,12 @@ void led_blinker_callback(timer_callback_args_t __attribute((unused)) *p_args) {
   if(switchState && !digitalRead(switchPin) && analogRead(rgbPin)>500)
   {
     switchState=false;
-    IrSender.sendNEC(IRcodes[3], 32);
+    IrSender.sendNEC(getHexByIndex(3), 32);
   }
 
   if (counter % 10 == 0&&digitalRead(switchPin)) {
-    IrSender.sendNEC(IRcodes[3], 32);
-    IrSender.sendNEC(IRcodes[4], 32);
+    IrSender.sendNEC(getHexByIndex(3), 32);
+    IrSender.sendNEC(getHexByIndex(4), 32);
     switchState=true;
   }
   
@@ -626,23 +658,22 @@ void serialIncome() {
       int IRcode = numberPart.toInt();
       Serial.print("Executed Code: ");
       Serial.println(IRcode);
-      IrSender.sendNEC(IRcodes[IRcode], 32);
+      IrSender.sendNEC(getHexByIndex(IRcode), 32);
     }
     else if(readString=="6")
     {
-      time_t UnixTime;
-      UnixTime = ArduinoCloud.getLocalTime() - 101;
-      Serial.println(ctime(&UnixTime));
+      String zeitString = timeClient.getFormattedTime(); 
+      Serial.println(zeitString);
       testeVerbindung();
       verbindungsAnimation(connectionOK);
     }
     else if(readString=="6_1")
     {
-      IrSender.sendNEC(IRcodes[3], 32);
-      IrSender.sendNEC(IRcodes[19], 32);
+      IrSender.sendNEC(getHexByIndex(3), 32);
+      IrSender.sendNEC(getHexByIndex(19), 32);
       for(int i = 0; i < 45; i++)
       {
-        IrSender.sendNEC(IRcodes[21], 32);
+        IrSender.sendNEC(getHexByIndex(21), 32);
         delay(20);
       }
 
@@ -650,7 +681,7 @@ void serialIncome() {
 
       for(int i = 0; i < 45; i++)
       {
-        IrSender.sendNEC(IRcodes[20], 32);
+        IrSender.sendNEC(getHexByIndex(20), 32);
         delay(20);
       }
     }
