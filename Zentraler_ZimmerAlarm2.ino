@@ -187,10 +187,11 @@ void testeVerbindung() {
   udp.write((const uint8_t*)"verbindungstest", strlen("verbindungstest"));
   udp.endPacket();
   Serial.println("Verbindungstest gesendet");
+  WDT.refresh();
 
   // Auf Antwort warten
   unsigned long startWait = millis();
-  while (millis() - startWait < 5000) { // 5 Sekunden warten
+  while (millis() - startWait < 4000) { // 5 Sekunden warten
     int packetSize = udp.parsePacket();
     if (packetSize) {
       int len = udp.read(incomingPacket, 255);
@@ -204,6 +205,7 @@ void testeVerbindung() {
       }
     }
   }
+  WDT.refresh();
 
   connectionOK = false; // Keine Antwort oder falsche Antwort
   Serial.println("ESP32-Verbindung fehlgeschlagen!");
