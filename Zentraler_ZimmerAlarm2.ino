@@ -1,5 +1,4 @@
 #include "arduino_secrets.h"
-#include "thingProperties.h"
 #include "WiFiS3.h"
 #include <WiFiUdp.h>
 #include <IRremote.h>
@@ -9,7 +8,7 @@
 #include "DHT.h"
 #include <WDT.h>
 #include "FspTimer.h"
-#include <arduinomqttclient.h>
+#include <MqttClient.h>
 
 #define DHTTYPE DHT22
 #define PIN_DHT22 7
@@ -32,32 +31,90 @@ const int pcPin = A0;
 const int rgbPin = A1;
 const int switchButtonLight = 8;
 
-const char* mqtt_client = "LinusUnoR4_1";           
-const char* broker = "[2a02:8070:d81:4400::8816]";
-const char* passwd = "3e67L\"=ODd=6";   
-const int port = 1883;
-const char* topic = "arduino/unoR4/test";
+const char broker[] = BROKER_HOST_ADRESS;
+int        port   = BROKER_HOST_PORT;
+const char mqtt_user[] = BROKER_USER;
+const char mqtt_pass[] = BROKER_PASSWORD;
+
+const char TOPIC_PC_STATUS[] = "linus/haydn17/kellerzimmer/pc/status";
+const char TOPIC_TEMP[]   = "linus/haydn17/kellerzimmer/temperature";
+const char TOPIC_PC_HUMIDITY[] = "linus/haydn17/kellerzimmer/humidity";
+const char TOPIC_PC_CMD[]    = "linus/haydn17/kellerzimmer/pc/command";
+const char TOPIC_RGB_CMD[]   = "linus/haydn17/kellerzimmer/rgb/command";
+const char TOPIC_RGB_STATUS[] = "linus/haydn17/kellerzimmer/rgb/status";
+
+bool pc_status_mqtt = false;
+bool last_pc_status = false;
+float temp_mqtt = 0;
+float last_temp = 0;
+float humi_mqtt = 0;
+float last_humi = 0;
+bool rgb_status_mqtt = false;
+bool last_rgb_status = false;
 
 bool LEDblinkerState=false;
 bool watchdogState=false;
 
 bool alarmPinState = 0;
-int IRcodes[27] = {0xFF3AC5, 0xFFBA45, 0xFF827D, 0xFF02FD, 0xFFA25D, 0xFF9A65, 0xFF1AE5, 0xFF22DD, 0xFF7887, 0xFF18E7, 0xFFE817, 0xFFC837, 0xFF609F, 0xFFE01F, 0xFF30CF, 0xFFB04F, 0xFF708F, 0xFF10EF, 0xFF906F, 0xFF50AF, 0xFF6897, 0xFF48B7, 0xFFA857, 0xFF8877, 0xFF28D7, 0xFF08F7, 0xFF7887};
 
-FspTimer led_blinker_timer;
-WiFiClient wifiClient;
-//MqttClient mqttClient(wifiClient);
-DHT dht(PIN_DHT22, DHTTYPE);
+struct Button {
+  const char* name;
+  uint32_t hex;
+};
+
+const Button buttons[] = {
+  {"Heller",     0xFF3AC5},
+  {"Dunkler",    0xFFBA45},
+  {"Skip",       0xFF827D},
+  {"On/Off",     0xFF02FD},
+  {"Rot",        0xFFA25D},
+  {"Blau",       0xFF9A65},
+  {"Grün",       0xFF1AE5},
+  {"Weiss",      0xFF22DD},
+  {"Pink",       0xFF7887},
+  {"Türkis",     0xFF18E7},
+  {"Quick",      0xFFE817},
+  {"Slow",       0xFFC837},
+  {"Fade 1",     0xFF609F},
+  {"Fade 2",     0xFFE01F},
+  {"DIY1",       0xFF30CF},
+  {"DIY2",       0xFFB04F},
+  {"DIY3",       0xFF708F},
+  {"DIY4",       0xFF10EF},
+  {"DIY5",       0xFF906F},
+  {"DIY6",       0xFF50AF},
+  {"RedUp",      0xFF6897},
+  {"RedDown",    0xFF48B7},
+  {"GreenUp",    0xFFA857},
+  {"GreenDown",  0xFF8877},
+  {"BlueUp",     0xFF28D7},
+  {"BlueDown",   0xFF08F7},
+  {"Dunkelgelb", 0xFF7887}
+};
+
+const int buttonCount = sizeof(buttons) / sizeof(buttons[0]);
 
 WiFiUDP udp;
 const int udpPort = 43332;           // Port, auf dem empfangen wird
 char incomingPacket[255];
+
+unsigned long lastPublishTime = 0;
+const long PUBLISH_INTERVAL = 1500;
 
 const char* esp32IP = "192.168.0.123"; // IP-Adresse des ESP32
 const int udpTestPort = 43332;         // Port des ESP32 für den Verbindungstest
 bool connectionOK = false;             // Status der Verbindung
 unsigned long lastTestMillis = 0;      // Letzter Testzeitpunkt
 const unsigned long testInterval = 1000 * 60 * 60 * 24; // 12 Stunden
+
+const long NTP_TIME_OFFSET = 7200;
+const char* NTP_SERVER = "pool.ntp.org";
+
+FspTimer led_blinker_timer;
+WiFiClient wifiClient;
+MqttClient mqttClient(wifiClient);
+DHT dht(PIN_DHT22, DHTTYPE);
+NTPClient timeClient(ntpUDP, NTP_SERVER, NTP_TIME_OFFSET, 60000);
 
 void LEDBlinken();
 void led_blinker_callback(timer_callback_args_t __attribute((unused)) *p_args);
@@ -84,38 +141,33 @@ void setup() {
   beginLEDTimer(20);
 
   dht.begin();
+  connectMqtt();
   // This delay gives the chance to wait for a Serial Monitor without blocking if none is found
   delay(3000);
-  
-  initProperties();
-  ArduinoCloud.begin(ArduinoIoTPreferredConnection);
-  setDebugMessageLevel(4);
-  ArduinoCloud.printDebugInfo();
 
   udp.begin(udpPort);
+  timeClient.begin();
   IrSender.begin(irLedPin);
   Serial.print("UDP Port gestartet: ");
   Serial.println(udpPort);
-
-  TimeService.setSyncInterval(600); //Alle 10 Minuten neu Time syncen
 
   Serial.println("Setup Beendet, Watchdog startet in 30 Sekunden");
 }
 
 void loop() {
   
-  if(millis()>30000 && watchdogState==false)
+  if(millis()>30000 && watchdogState==false) //Watchdog erst nach 30 Sekunden starten
   {
     WDT.begin(5000);
     watchdogState=true;
     Serial.println("Watchdog gestartet!");
   }
 
-  temperaturIOT = dht.readTemperature();
+  timeClient.update();
+  temp_mqtt = dht.readTemperature();
+  humi_mqtt = dht.readHumidity();
   checkAnalogPin();
-  ArduinoCloud.update();
   serialIncome();
-  WDT.refresh();
   UPDIncome();
 
   if (istZeitZumTesten()) {
@@ -123,6 +175,136 @@ void loop() {
     verbindungsAnimation(connectionOK);
   }
 
+  if (!mqttClient.connected()) {
+    // Wenn die Verbindung verloren geht, versuche erneut zu verbinden
+    Serial.println("MQTT connection lost. Reconnecting...");
+    connectMqtt();
+  }
+  mqttClient.poll();
+
+  // Daten nur in einem bestimmten Intervall lesen und senden
+  if (millis() - lastPublishTime > PUBLISH_INTERVAL) {
+    lastPublishTime = millis();
+    publishSensorData();
+  }
+  WDT.refresh();
+
+}
+
+void connectMqtt() {
+  mqttClient.onMessage(onMqttMessage); // Setze die Callback-Funktion für eingehende Nachrichten
+
+  // Falls dein Broker eine Authentifizierung benötigt:
+  // mqttClient.setUsernamePassword(mqtt_user, mqtt_pass);
+
+  Serial.print("Connecting to MQTT broker '");
+  Serial.print(broker);
+  Serial.print("'...");
+  while (!mqttClient.connect(broker, port)) {
+    Serial.print(".");
+    // Warte 5 Sekunden vor dem nächsten Versuch
+    delay(5000);
+  }
+  Serial.println("\nMQTT connected!");
+
+  // Topics mit QoS 2 abonnieren
+  Serial.println("Subscribing to topics with QoS 2...");
+  mqttClient.subscribe(TOPIC_PC_CMD, 2);
+  mqttClient.subscribe(TOPIC_RGB_CMD, 2);
+}
+
+void publishSensorData() {
+
+  if (pc_status_mqtt != last_pc_status) {
+    last_pc_status = pc_status_mqtt
+    mqttClient.beginMessage(TOPIC_PC_STATUS, true, 1); // topic, retained, qos
+    mqttClient.print(pc_status_mqtt);
+    mqttClient.endMessage();
+  }
+
+  if (isnan(temp_mqtt) || isnan(humi_mqtt)) {
+    Serial.println("Failed to read from DHT sensor!");
+    return;
+  }
+
+  // Nur senden, wenn sich der Wert signifikant ändert
+  if (abs(temp_mqtt - last_temp) > 0.1) {
+    last_temp = temp_mqtt;
+    mqttClient.beginMessage(TOPIC_PC_TEMP, false, 0); // topic, retained, qos
+    mqttClient.print(temp_mqtt);
+    mqttClient.endMessage();
+  }
+  
+  if (abs(humi_mqtt - last_humi) > 0.5) {
+    last_humi = humi_mqtt;
+    mqttClient.beginMessage(TOPIC_PC_HUMIDITY, false, 0);
+    mqttClient.print(humi_mqtt);
+    mqttClient.endMessage();
+  }
+}
+
+void onMqttMessage(int messageSize) {
+  String topic = mqttClient.messageTopic();
+  String payload = "";
+  while (mqttClient.available()) {
+    payload += (char)mqttClient.read();
+  }
+
+  Serial.println("---");
+  Serial.print("Received message on topic: ");
+  Serial.println(topic);
+  Serial.print("Payload: ");
+  Serial.println(payload);
+  Serial.println("---");
+
+
+  if (topic == TOPIC_PC_CMD) {
+    handlePcCommand(payload);
+  }
+
+  if (topic == TOPIC_RGB_CMD) {
+    handleRgbCommand(payload);
+  }
+}
+
+void handlePcCommand(String command) {
+  if (command == "TOGGLE") {
+    Serial.println("Toggling PC relay...");
+    digitalWrite(relayPin,HIGH);
+    delay(1000);
+    digitalWrite(relayPin,LOW);
+  }
+  else if (command == "RESET")
+  {
+    Serial.println("Resetting PC relay...");
+    digitalWrite(relayPin,HIGH);
+    delay(4000);
+    WDT.refresh();
+    delay(4000)
+    digitalWrite(relayPin,LOW);
+  }
+  else {
+    Serial.print("Unknown PC command: ");
+    Serial.println(command);
+  }
+}
+
+void handleRgbCommand(String command) {
+  // HINWEIS: Du musst die Hex-Codes für deine spezifische Fernbedienung
+  // mit einem IR-Empfänger-Sketch herausfinden.
+  // Die hier verwendeten Codes sind nur Beispiele!
+  
+  Serial.print("Handling RGB command: ");
+  Serial.println(command);
+
+  code = getHexByName(command);
+  if (code == 0)
+  {
+    Serial.print("Ungueltiger Code: ");
+    Serial.println(command);
+    return;
+  }
+  IrSender.sendNEC(code, 32);
 }
 
 void verbindungsAnimation(bool verbindung)
@@ -176,6 +358,7 @@ void verbindungsAnimation(bool verbindung)
       delay(20);
     }
     IrSender.sendNEC(IRcodes[12], 32);
+    
   }
 
 }
@@ -212,23 +395,23 @@ void testeVerbindung() {
 }
 
 bool istZeitZumTesten() {
-  
-  unsigned long currentMillis = millis();
-  if (currentMillis - lastTestMillis >= testInterval) {
-    lastTestMillis = millis();
+  // Check 1: Ist das große Intervall (z.B. 12 Stunden) abgelaufen?
+  if (millis() - lastUdpTestTime >= UDP_TEST_INTERVAL) {
     return true;
   }
 
-  // Lokale Zeit aus ThingProperties verwenden (falls Arduino Cloud aktiv):
-  time_t UnixTime;
-  UnixTime = ArduinoCloud.getLocalTime();
-  DateTime now = UnixTime;
+  // Check 2: Ist es eine der festgelegten Uhrzeiten (17:00 oder 21:00)?
+  int stunde = timeClient.getHours();
+  int minute = timeClient.getMinutes();
 
-  if ((now.hour() == 17 && now.minute() == 0 || now.hour() == 21 && now.minute() == 0)&&currentMillis - lastTestMillis > 1000*65) {
-    lastTestMillis = millis();
+  bool istTriggerZeit = (stunde == 17 && minute == 0) || (stunde == 21 && minute == 0);
+
+  // Wenn es die Trigger-Zeit ist UND der letzte Test länger als 65 Sekunden her ist
+  // (um mehrfaches Auslösen in derselben Minute zu verhindern), dann ist es Zeit.
+  if (istTriggerZeit && (millis() - lastUdpTestTime > 65000)) {
     return true;
   }
-  
+
   return false;
 }
 
@@ -341,12 +524,6 @@ void led_blinker_callback(timer_callback_args_t __attribute((unused)) *p_args) {
   
 }
 
-void onColorIOTChange()
-{
-
-}
-
-
 bool beginLEDTimer(float rate) {
   uint8_t timer_type = GPT_TIMER;
   int8_t tindex = FspTimer::get_available_timer(timer_type);
@@ -379,24 +556,9 @@ bool beginLEDTimer(float rate) {
 
 void checkAnalogPin() {
   int wert = analogRead(pcPin);
-  pC_StatusIOT = wert > 500;
+  pc_status_mqtt = wert > 500;
 }
 
-
-
-void onPCSwitchIOTChange()  {
-  if(pC_SwitchIOT&&millis()>20000)
-  {
-    digitalWrite(relayPin,HIGH);
-    delay(1000);
-    digitalWrite(relayPin,LOW);
-  }
-  else
-  {
-    digitalWrite(relayPin,LOW);
-  }
-  pC_SwitchIOT=false;
-}
 
 void serialIncome() {
   String readString="";
@@ -496,4 +658,21 @@ void serialIncome() {
     
   }
   readString="";  
+}
+
+uint32_t getHexByIndex(int index) {
+  if (index >= 0 && index < buttonCount) {
+    return buttons[index].hex;
+  }
+  return 0;
+}
+
+// Zugriff über Name
+uint32_t getHexByName(const char* name) {
+  for (int i = 0; i < buttonCount; i++) {
+    if (strcmp(buttons[i].name, name) == 0) {
+      return buttons[i].hex;
+    }
+  }
+  return 0;
 }
